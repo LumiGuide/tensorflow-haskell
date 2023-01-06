@@ -32,4 +32,5 @@ extra-include-dirs:
 
 nix:
     enable: false
-    shell-file: shell.nix
+    path: ["nixpkgs=https://github.com/NixOS/nixpkgs/archive/2dea8991d89b9f1e78d874945f78ca15f6954289.tar.gz"]
+    packages: [snappy, zlib, protobuf, libtensorflow]
