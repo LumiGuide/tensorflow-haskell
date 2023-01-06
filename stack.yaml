@@ -1,4 +1,4 @@
-resolver: lts-16.18
+resolver: lts-18.28
 
 packages:
 - tensorflow
@@ -14,8 +14,13 @@ packages:
 - tensorflow-test
 
 extra-deps:
-- snappy-framing-0.1.2
-- snappy-0.2.0.2
+- proto-lens-0.7.1.2@sha256:1d16d73948f4100e1de8374356c3fcfacc63dcc7b8d2130c580f79bdb0139bc5,2973
+- proto-lens-protobuf-types-0.7.1.2@sha256:95ce1cd73af58a45a3758641d596c3b4c95a02c3bd71f9c05646b42258954dc8,2986
+- proto-lens-protoc-0.7.1.1@sha256:4b3b97d5caac9a9f8a85d426d5ad8a129f36e852dd05f42e614d9912030b9700,2233
+- proto-lens-runtime-0.7.0.3@sha256:5165848fa8c112716a4d550dcd8dda8858226294ce3e24462e5b0d9050de9899,3051
+- proto-lens-setup-0.4.0.6@sha256:42765a1e1bdf61d3f3e8a4cca60bb9534d59e37541d5ba1927e3224420f4e475,3121
+- snappy-0.2.0.2@sha256:2931b03c5fdab2dac8d7eadb3be2f4ef8906666e43f1f1db65a06efd57ea701b,1591
+- snappy-framing-0.1.2@sha256:68c8f44e7b1e04d0342b83bae62f390350875bc4fcf4c203c0ad012323508f64,1196
 
 # For Mac OS X, whose linker doesn't use this path by default
 # unless you run `xcode-select --install`.
