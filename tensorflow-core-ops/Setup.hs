@@ -148,6 +148,8 @@ blackList =
     , "_TPUReplicate"
     , "_While"
     , "_XlaCompile"
+    -- Incorrectly generated:
+    , "_FusedBatchNormGradEx"
     ]
 
 autogenModulesDir :: LocalBuildInfo -> FilePath
