@@ -44,6 +44,14 @@ message :: Status -> IO CString
 message = {# call TF_Message as ^ #}
 
 
+-- Output.
+{# pointer *TF_Output as Output newtype #}
+
+
+-- Operation.
+{# pointer *TF_Operation as Operation newtype #}
+
+
 -- Buffer.
 data Buffer
 {# pointer *TF_Buffer as BufferPtr -> Buffer #}
@@ -97,6 +105,9 @@ tensorByteSize = {# call TF_TensorByteSize as ^ #}
 tensorData :: Tensor -> IO (Ptr ())
 tensorData = {# call TF_TensorData as ^ #}
 
+-- Graph.
+{# pointer *TF_Graph as Graph newtype #}
+
 
 -- Session Options.
 {# pointer *TF_SessionOptions as SessionOptions newtype #}
@@ -115,29 +126,36 @@ deleteSessionOptions = {# call TF_DeleteSessionOptions as ^ #}
 
 
 -- Session.
-{# pointer *TF_DeprecatedSession as Session newtype #}
+{# pointer *TF_Session as Session newtype #}
 
-newSession :: SessionOptions -> Status -> IO Session
-newSession = {# call TF_NewDeprecatedSession as ^ #}
+newSession :: Graph -> SessionOptions -> Status -> IO Session
+newSession = {# call TF_NewSession as ^ #}
+
+loadSessionFromSavedModel :: SessionOptions
+                          -> BufferPtr           -- RunOptions proto.
+                          -> CString             -- Export directory.
+                          -> Ptr CString -> CInt -- Tags.
+                          -> Graph               -- Graph.
+                          -> BufferPtr           -- MetaGraphDef.
+                          -> Status
+                          -> IO Session
+loadSessionFromSavedModel = {# call TF_LoadSessionFromSavedModel as ^ #}
 
 closeSession :: Session -> Status -> IO ()
-closeSession = {# call TF_CloseDeprecatedSession as ^ #}
+closeSession = {# call TF_CloseSession as ^ #}
 
 deleteSession :: Session -> Status -> IO ()
-deleteSession = {# call TF_DeleteDeprecatedSession as ^ #}
-
-extendGraph :: Session -> Ptr () -> CULong -> Status -> IO ()
-extendGraph = {# call TF_ExtendGraph as ^ #}
+deleteSession = {# call TF_DeleteSession as ^ #}
 
 run :: Session
-    -> BufferPtr                          -- RunOptions proto.
-    -> Ptr CString -> Ptr Tensor -> CInt  -- Input (names, tensors, count).
-    -> Ptr CString -> Ptr Tensor -> CInt  -- Output (names, tensors, count).
-    -> Ptr CString -> CInt                -- Target nodes (names, count).
-    -> BufferPtr                          -- RunMetadata proto.
+    -> BufferPtr                     -- RunOptions proto.
+    -> Output -> Ptr Tensor -> CInt  -- Input (names, tensors, count).
+    -> Output -> Ptr Tensor -> CInt  -- Output (names, tensors, count).
+    -> Ptr Operation -> CInt         -- Target operations (names, count).
+    -> BufferPtr                     -- RunMetadata proto.
     -> Status
     -> IO ()
-run = {# call TF_Run as ^ #}
+run = {# call TF_SessionRun as ^ #}
 
 -- FFI helpers.
 type TensorDeallocFn = Ptr () -> CULong -> Ptr () -> IO ()

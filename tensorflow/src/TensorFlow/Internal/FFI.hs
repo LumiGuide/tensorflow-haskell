@@ -20,7 +20,6 @@ module TensorFlow.Internal.FFI
     ( TensorFlowException(..)
     , Raw.Session
     , withSession
-    , extendGraph
     , run
     , TensorData(..)
     , setSessionConfig
@@ -108,12 +107,6 @@ shutDownRunner r = do
     cancel r
     -- TODO(gnezdo): manage exceptions better than print.
     either print (const (return ())) =<< waitCatch r
-
-extendGraph :: Raw.Session -> GraphDef -> IO ()
-extendGraph session pb =
-    useProtoAsVoidPtrLen pb $ \ptr len ->
-        checkStatus $ Raw.extendGraph session ptr len
-
 
 run :: Raw.Session
     -> [(B.ByteString, TensorData)] -- ^ Feeds.
