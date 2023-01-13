@@ -21,6 +21,7 @@ module TensorFlow.Internal.FFI
     , Raw.Session
     , Raw.SessionOptions
     , withSession
+    , withSessionFromSavedModel
     , SessionAction
     , Raw.Graph
     , importGraphDef
@@ -45,12 +46,14 @@ import Data.Maybe (fromMaybe)
 import Data.Typeable (Typeable)
 import Data.Word (Word8)
 import Foreign (Ptr, FunPtr, nullPtr, castPtr)
+import Foreign.C (CInt)
 import Foreign.C.String (CString)
 import Foreign.ForeignPtr (newForeignPtr, newForeignPtr_, withForeignPtr)
 import Foreign.Marshal.Alloc (free)
 import Foreign.Marshal.Array (withArrayLen, peekArray, mallocArray, copyArray)
 import System.IO.Unsafe (unsafePerformIO)
 import qualified Data.ByteString as B
+import qualified Data.ByteString.Char8 as C
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
 import qualified Data.Text.Encoding.Error as T
@@ -88,6 +91,30 @@ withSession :: (MonadIO m, MonadMask m)
             -> SessionAction m a
             -> m a
 withSession = withSession_ Raw.newSession
+
+withSessionFromSavedModel :: (MonadIO m, MonadMask m)
+                          => B.ByteString
+                          -- ^ exportDir
+                          -> [B.ByteString]
+                          -- ^ Tags.
+                          -> (Raw.SessionOptions -> IO ())
+                          -- ^ optionSetter
+                          -> SessionAction m a
+                          -> m a
+withSessionFromSavedModel exportDir tags =
+    withSession_ $ \graph options status ->
+    B.useAsCString exportDir $ \cExportDir ->
+    withStringArrayLen tags $ \nTags cTags ->
+        Raw.loadSessionFromSavedModel options
+                                      runOptions
+                                      cExportDir
+                                      cTags (safeConvert nTags)
+                                      graph
+                                      metaGraphDef
+                                      status
+  where
+    runOptions = nullPtr
+    metaGraphDef = nullPtr
 
 withSession_ :: (MonadIO m, MonadMask m)
              => (Raw.Graph -> Raw.SessionOptions -> Raw.Status -> IO Raw.Session)

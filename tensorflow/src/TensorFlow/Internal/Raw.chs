@@ -172,6 +172,15 @@ deleteSessionOptions = {# call TF_DeleteSessionOptions as ^ #}
 newSession :: Graph -> SessionOptions -> Status -> IO Session
 newSession = {# call TF_NewSession as ^ #}
 
+loadSessionFromSavedModel :: SessionOptions
+                          -> BufferPtr           -- RunOptions proto.
+                          -> CString             -- Export directory.
+                          -> Ptr CString -> CInt -- Tags.
+                          -> Graph               -- Graph.
+                          -> BufferPtr           -- MetaGraphDef.
+                          -> Status
+                          -> IO Session
+loadSessionFromSavedModel = {# call TF_LoadSessionFromSavedModel as ^ #}
 
 closeSession :: Session -> Status -> IO ()
 closeSession = {# call TF_CloseSession as ^ #}
