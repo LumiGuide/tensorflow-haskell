@@ -35,6 +35,7 @@ library
                   , TensorFlow.Tensor
                   , TensorFlow.Types
   other-modules:    TensorFlow.Internal.Raw
+  autogen-modules:  TensorFlow.Internal.Raw
   build-tool-depends: c2hs:c2hs
   build-depends:  proto-lens == 0.7.*
                 , tensorflow-proto == 0.3.*
