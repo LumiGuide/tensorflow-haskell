@@ -28,7 +28,6 @@ module TensorFlow.Session (
     runSession,
     runSessionWithOptions,
     MonadBuild(..),
-    extend,
     addGraphDef,
     run,
     runWithFeeds,
@@ -67,13 +66,13 @@ import qualified TensorFlow.Internal.FFI as FFI
 type Tracer = Builder.Builder -> IO ()
 
 -- Common state threaded through the session.
-data SessionState
-    = SessionState {
-          rawSession :: FFI.Session
-        , asyncCollector :: IO () -> IO ()
-          -- ^ Starts the given action concurrently.
-        , tracer :: Tracer
-        }
+data SessionState = SessionState
+    { rawSession :: FFI.Session
+    , rawGraph :: FFI.Graph
+    , asyncCollector :: IO () -> IO ()
+      -- ^ Starts the given action concurrently.
+    , tracer :: Tracer
+    }
 
 newtype SessionT m a
     = Session (ReaderT SessionState (BuildT m) a)
@@ -84,10 +83,6 @@ instance MonadTrans SessionT where
   lift = Session . lift . lift
 
 type Session = SessionT IO
-
--- | Run 'Session' actions in a new TensorFlow session.
-runSession :: (MonadMask m, MonadIO m) => SessionT m a -> m a
-runSession = runSessionWithOptions def
 
 -- | Customization for session. Use the lenses to update:
 -- 'sessionTarget', 'sessionTracer', 'sessionConfig'.
@@ -117,17 +112,30 @@ sessionConfig = lens _sessionConfig (\g x -> g { _sessionConfig = x })
 sessionTracer :: Lens' Options Tracer
 sessionTracer = lens _sessionTracer (\g x -> g { _sessionTracer = x })
 
+-- | Run 'Session' actions in a new TensorFlow session.
+runSession :: (MonadMask m, MonadIO m) => SessionT m a -> m a
+runSession = runSessionWithOptions def
+
 -- | Run 'Session' actions in a new TensorFlow session created with
 -- the given option setter actions ('sessionTarget', 'sessionConfig').
 runSessionWithOptions :: (MonadMask m, MonadIO m) => Options -> SessionT m a -> m a
-runSessionWithOptions options (Session m) =
-    FFI.withSession applyOptions $
-        \as rs ->
-            let initState = SessionState rs as (options ^. sessionTracer)
+runSessionWithOptions options session =
+    _runSessionWithOptions session options $ FFI.withSession
+
+_runSessionWithOptions :: (MonadMask m, MonadIO m)
+                       => SessionT m a
+                       -> Options
+                       -> ((FFI.SessionOptions -> IO ()) -> FFI.SessionAction m a -> m a)
+                       -> m a
+_runSessionWithOptions (Session m) options withSession =
+    withSession applyOptions $
+        \asyncCollector rawSession rawGraph ->
+            let initState = SessionState rawSession rawGraph asyncCollector (options ^. sessionTracer)
             in evalBuildT (runReaderT m initState)
-  where applyOptions opt = do
-            FFI.setSessionTarget (options ^. sessionTarget) opt
-            FFI.setSessionConfig (options ^. sessionConfig) opt
+  where
+    applyOptions opt = do
+        FFI.setSessionTarget (options ^. sessionTarget) opt
+        FFI.setSessionConfig (options ^. sessionConfig) opt
 
 instance Monad m => MonadBuild (SessionT m) where
     build = Session . lift . build
@@ -139,16 +147,17 @@ instance Monad m => MonadBuild (SessionT m) where
 extend :: MonadIO m => SessionT m ()
 extend = do
     session <- Session (asks rawSession)
+    graph <- Session (asks rawGraph)
     trace <- Session (asks tracer)
     nodesToExtend <- build flushNodeBuffer
     unless (null nodesToExtend) $ liftIO $ do
         let graphDef = (defMessage :: GraphDef) & node .~ nodesToExtend
         trace ("Session.extend " <> Builder.string8 (showMessage graphDef))
-        FFI.extendGraph session graphDef
+        FFI.importGraphDef graph graphDef
     -- Now that all the nodes are created, run the initializers.
     initializers <- build flushInitializers
     unless (null initializers) $
-        void $ liftIO $ FFI.run session [] [] (toNodeNames initializers)
+        void $ liftIO $ FFI.run session graph [] [] (toNodeNames initializers)
 
 -- | Run a subgraph 't', rendering any dependent nodes that aren't already
 -- rendered, and fetch the corresponding values for 'a'.
@@ -173,8 +182,9 @@ runFetchWithFeeds feeds target (Fetch fetch restore) = do
     let feeds' = fixFeeds feeds
     let fetchNames = encodeUtf8 <$> Set.toList fetch
         targetNames = toNodeNames $ Set.toList target
-    session <- Session (asks rawSession)
-    runResult <- liftIO $ FFI.run session
+    state <- Session ask
+    runResult <- liftIO $ FFI.run (rawSession state)
+                                  (rawGraph   state)
                                   feeds'
                                   fetchNames
                                   targetNames
@@ -214,5 +224,5 @@ asyncProdNodes nodes = do
     extend
     let targetNames = toNodeNames $ Set.toList target
     state <- Session ask
-    let loop = forever (void (FFI.run (rawSession state) [] [] targetNames))
+    let loop = forever (void (FFI.run (rawSession state) (rawGraph state) [] [] targetNames))
     liftIO (asyncCollector state loop)

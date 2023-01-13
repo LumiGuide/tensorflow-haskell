@@ -19,8 +19,11 @@
 module TensorFlow.Internal.FFI
     ( TensorFlowException(..)
     , Raw.Session
+    , Raw.SessionOptions
     , withSession
-    , extendGraph
+    , SessionAction
+    , Raw.Graph
+    , importGraphDef
     , run
     , TensorData(..)
     , setSessionConfig
@@ -74,15 +77,26 @@ data TensorData = TensorData
     }
   deriving (Show, Eq)
 
+-- | The action can spawn concurrent tasks which will be canceled before
+-- withSession returns.
+type SessionAction m a = (IO () -> IO ()) -> Raw.Session -> Raw.Graph -> m a
+
 -- | Runs the given action after creating a session with options
 -- populated by the given optionSetter.
 withSession :: (MonadIO m, MonadMask m)
             => (Raw.SessionOptions -> IO ())
-            -> ((IO () -> IO ()) -> Raw.Session -> m a)
-            -- ^ The action can spawn concurrent tasks which will
-            -- be canceled before withSession returns.
+            -> SessionAction m a
             -> m a
-withSession optionSetter action = do
+withSession = withSession_ Raw.newSession
+
+withSession_ :: (MonadIO m, MonadMask m)
+             => (Raw.Graph -> Raw.SessionOptions -> Raw.Status -> IO Raw.Session)
+             -- ^ mkSession
+             -> (Raw.SessionOptions -> IO ())
+             -- ^ optionSetter
+             -> SessionAction m a
+             -> m a
+withSession_ mkSession optionSetter action = do
     drain <- liftIO $ newMVar []
     let cleanup s =
         -- Closes the session to nudge the pending run calls to fail and exit.
@@ -92,11 +106,12 @@ withSession optionSetter action = do
                 mapM_ shutDownRunner runners
                 checkStatus (Raw.deleteSession s)
     let bracketIO x y = bracket (liftIO x) (liftIO . y)
-    bracketIO Raw.newSessionOptions Raw.deleteSessionOptions $ \options -> do
-        bracketIO
-            (optionSetter options >> checkStatus (Raw.newSession options))
-            cleanup
-            (action (asyncCollector drain))
+    bracketIO Raw.newGraph Raw.deleteGraph $ \graph ->
+        bracketIO Raw.newSessionOptions Raw.deleteSessionOptions $ \options -> do
+            bracketIO
+                (optionSetter options >> checkStatus (mkSession graph options))
+                cleanup
+                (\session -> action (asyncCollector drain) session graph)
 
 asyncCollector :: MVar [Async ()] -> IO () -> IO ()
 asyncCollector drain runner = modifyMVarMasked_ drain launchAndRecord
@@ -109,43 +124,73 @@ shutDownRunner r = do
     -- TODO(gnezdo): manage exceptions better than print.
     either print (const (return ())) =<< waitCatch r
 
-extendGraph :: Raw.Session -> GraphDef -> IO ()
-extendGraph session pb =
-    useProtoAsVoidPtrLen pb $ \ptr len ->
-        checkStatus $ Raw.extendGraph session ptr len
-
+importGraphDef :: Raw.Graph -> GraphDef -> IO ()
+importGraphDef graph pb =
+    useProtoAsBuffer pb $ \buffer ->
+        checkStatus $ Raw.importGraphDef graph buffer importGraphDefOptions
+  where
+    importGraphDefOptions = nullPtr
 
 run :: Raw.Session
-    -> [(B.ByteString, TensorData)] -- ^ Feeds.
-    -> [B.ByteString]               -- ^ Fetches.
-    -> [B.ByteString]               -- ^ Targets.
+    -> Raw.Graph
+    -> [(B.ByteString, TensorData)] -- ^ Inputs.
+    -> [B.ByteString]               -- ^ Outputs.
+    -> [B.ByteString]               -- ^ Target operations.
     -> IO [TensorData]
-run session feeds fetches targets = do
-    let nullTensor = Raw.Tensor nullPtr
+run session graph inputNamesData outputNames targetNames = do
     -- Use mask to avoid leaking input tensors before they are passed to 'run'
     -- and output tensors before they are passed to 'createTensorData'.
     mask_ $
-        -- Feeds
-        withStringArrayLen (fst <$> feeds) $ \feedsLen feedNames ->
-        mapM (createRawTensor . snd) feeds >>= \feedTensors ->
-        withArrayLen feedTensors $ \_ cFeedTensors ->
-        -- Fetches.
-        withStringArrayLen fetches $ \fetchesLen fetchNames ->
-        -- tensorOuts is an array of null Tensor pointers that will be filled
+        -- Inputs.
+        mapM (resolveOutput . fst) inputNamesData >>= \inputs ->
+        withArrayLen inputs $ \nInputs cInputs ->
+        mapM (createRawTensor . snd) inputNamesData >>= \inputTensors ->
+        withArrayLen inputTensors $ \_ cInputTensors ->
+        -- Outputs.
+        mapM resolveOutput outputNames >>= \outputs ->
+        withArrayLen outputs $ \nOutputs cOutputs ->
+        -- outputTensors is an array of null Tensor pointers that will be filled
         -- by the call to Raw.run.
-        withArrayLen (replicate fetchesLen nullTensor) $ \_ tensorOuts ->
-        -- Targets.
-        withStringArrayLen targets $ \targetsLen ctargets -> do
+        withArrayLen (replicate nOutputs nullTensor) $ \_ cOutputTensors ->
+        -- Target operations.
+        mapM resolveOperation targetNames >>= \targets ->
+        withArrayLen targets $ \nTargets cTargets -> do
             checkStatus $ Raw.run
                 session
-                nullPtr
-                feedNames cFeedTensors (safeConvert feedsLen)
-                fetchNames tensorOuts (safeConvert fetchesLen)
-                ctargets (safeConvert targetsLen)
-                nullPtr
-            mapM_ Raw.deleteTensor feedTensors
-            outTensors <- peekArray fetchesLen tensorOuts
+                nullPtr -- RunOptions proto.
+                cInputs  cInputTensors  (safeConvert nInputs)
+                cOutputs cOutputTensors (safeConvert nOutputs)
+                cTargets                (safeConvert nTargets)
+                nullPtr -- RunMetadata.
+            mapM_ Raw.deleteTensor inputTensors
+            outTensors <- peekArray nOutputs cOutputTensors
             mapM createTensorData outTensors
+  where
+    resolveOutput :: B.ByteString -> IO Raw.Output
+    resolveOutput name = do
+        let (opName, idx) = parseName name
+        op <- resolveOperation opName
+        pure $ Raw.Output op idx
+
+    resolveOperation :: B.ByteString -> IO Raw.Operation
+    resolveOperation name = do
+        op <- B.useAsCString name $ Raw.graphOperationByName graph
+        case op of
+          Raw.Operation ptr | ptr == nullPtr -> throwM exception
+          _ -> pure op
+      where
+        exception =
+            let msg = "Operation not found in graph: " <> (T.pack $ show name)
+            in TensorFlowException Raw.TF_INVALID_ARGUMENT msg
+
+    parseName :: B.ByteString -> (B.ByteString, CInt)
+    parseName name =
+        case break (== ':') (C.unpack name) of
+          (name, ':':idxStr) | [(idx, "" :: String)] <- read idxStr
+            -> (C.pack name, idx)
+          _ -> (name, 0)
+
+    nullTensor = Raw.Tensor nullPtr
 
 
 -- Internal.
@@ -245,18 +290,26 @@ useProtoAsVoidPtrLen :: (Message msg, Integral c, Show c, Bits c) =>
 useProtoAsVoidPtrLen msg f = B.useAsCStringLen (encodeMessage msg) $
         \(bytes, len) -> f (castPtr bytes) (safeConvert len)
 
+-- | Serializes the given msg and provides it as BufferPtr argument
+-- to the given action.
+useProtoAsBuffer :: (Message msg) =>
+                    msg -> (Raw.BufferPtr -> IO a) -> IO a
+useProtoAsBuffer msg f =
+    B.useAsCStringLen (encodeMessage msg) $ \(bytes, len) ->
+        bracket (Raw.newBufferFromString (castPtr bytes) (safeConvert len))
+                Raw.deleteBuffer
+                f
+
 -- | Returns the serialized OpList of all OpDefs defined in this
 -- address space.
 getAllOpList :: IO B.ByteString
-getAllOpList = do
-    foreignPtr <-
-        mask_ (newForeignPtr Raw.deleteBuffer =<< checkCall)
-    -- Makes a copy because it is more reliable than eviscerating
-    -- Buffer to steal its memory (including custom deallocator).
-    withForeignPtr foreignPtr $
-        \ptr -> B.packCStringLen =<< (,)
-                <$> (castPtr <$> Raw.getBufferData ptr)
-                <*> (safeConvert <$> Raw.getBufferLength ptr)
+getAllOpList =
+    bracket checkCall Raw.deleteBuffer $ \buffer ->
+        -- Makes a copy because it is more reliable than eviscerating
+        -- Buffer to steal its memory (including custom deallocator).
+        B.packCStringLen =<< (,)
+            <$> (castPtr <$> Raw.getBufferData buffer)
+            <*> (safeConvert <$> Raw.getBufferLength buffer)
     where
       checkCall = do
           p <- Raw.getAllOpList
